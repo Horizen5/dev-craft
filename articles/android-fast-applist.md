@@ -151,7 +151,55 @@ val filteredApps = combine(apps, appFilter, search, appSort) { list, filter, q, 
 - **二次进入 / 杀进程重开**：Room 命中，几乎瞬间出带计数的列表，富化只在「新装 / 更新」时发生；
 - **滚动**：只解可见卡片图标，内存平稳，不再有「一进列表就解码 200 个 Bitmap」的峰值。
 
+---
+
+## 关键补丁：缓存一致性（实时层）
+
+上面的三层能解决「重新打开 App 不漏新装应用」——因为快列表每次都从 `PackageManager` 重拉全量包名，
+**不是纯读缓存**。所以「10:00 装微信、10:01 打开 App」微信照样立刻出现，不会停留在旧列表。
+
+但还差一种情况：**App 还活着的时候**，用户切出去装了个新 App 再切回来——此时 ViewModel 没重建，
+首屏同步没重跑，新 App 不会自己冒出来。补一个广播监听即可：
+
+```kotlin
+private val packageWatcher = object : BroadcastReceiver() {
+    override fun onReceive(c: Context?, intent: Intent?) {
+        when (intent?.action) {
+            Intent.ACTION_PACKAGE_ADDED,
+            Intent.ACTION_PACKAGE_REMOVED,
+            Intent.ACTION_PACKAGE_REPLACED -> viewModelScope.launch { refreshAppList() }
+        }
+    }
+}
+// 在 Application 上下文上动态注册（不受 Android 8+ 后台静态广播限制影响）
+val filter = IntentFilter().apply {
+    addAction(Intent.ACTION_PACKAGE_ADDED)
+    addAction(Intent.ACTION_PACKAGE_REMOVED)
+    addAction(Intent.ACTION_PACKAGE_REPLACED)
+    addDataScheme("package")   // 必须加，否则收不到包级广播
+}
+app.registerReceiver(packageWatcher, filter)
+```
+
+要点：
+- **动态注册在 Application 上下文**，进程在就能收，前台更稳；不必在 manifest 声明（那反而受 O 的后台广播限制）。
+- **务必 `addDataScheme("package")`**，否则 `ACTION_PACKAGE_*` 根本不会投递过来。
+- 收到后直接重跑「首屏同步 + 后台富化」那一套即可，缓存会自动按 `apkPath` 命中/失效。
+
+**最终三层（加实时层即四级）**：
+
+```
+① 启动同步   getInstalledApplications(0)    保证「打开不漏」
+② 数据库缓存  Room app_cache                 避免重复解析
+③ 实时广播   PACKAGE_ADDED/REMOVED          保证「运行中也不 stale」
+④ 深度懒加载  点击才 ManifestScanner 全量探针  重的活推到最后
+```
+
+> MT 管理器大概率就是这套思路：**PackageManager 保证实时性 + 自己缓存解析结果**，列表快且绝不显示旧列表。
+
+---
+
 **适用任何「列表 + 详情」结构**：文件管理器、会话列表、已装应用、音乐/视频库……一句话——
-**列表层只做轻量展示与跳转，把重的 IO 和分析推到点击时，并用缓存避免重复劳动。**
+**列表层只做轻量展示与跳转，把重的 IO 和分析推到点击时，并用「PM 同步 + 缓存 + 广播」保证又快又一致。**
 
 > 注：真实耗时需在真机/模拟器用 systrace 确认；以上为架构层面的确定性改进，非基准测试数字。
