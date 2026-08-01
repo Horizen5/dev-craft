@@ -19,6 +19,12 @@
 |------|-----------|
 | [让 Android 应用列表秒开](./articles/android-fast-applist.md) | 列表即缓存，深度即懒加载；图标只解可见项，排序放在组合层 |
 
+### Android / WebView
+
+| 文章 | 一句话方法 |
+|------|-----------|
+| [Android WebView 封装：六个配置项决定体验上限](./articles/webview-wrapper.md) | JS / DOM 存储 / 返回键 / 下拉刷新 / UA / 视口六项全到位，用户才感觉是 App 而非浏览器书签 |
+
 ### Android / Hook 与逆向
 
 | 文章 | 一句话方法 |
